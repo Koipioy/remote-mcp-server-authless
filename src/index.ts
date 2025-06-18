@@ -1,155 +1,84 @@
-// MCP JSON-RPC Worker for Eastern Time timestamps
-// Supports Claude web-based MCP integration (no token auth)
-// - No authentication required
-// - ISO 8601 timestamp in America/New_York timezone
+// src/index.js  (module syntax)
 
-function getEasternTime() {
-  const now = new Date();
+// ── 1. utility: ISO string in America/New_York ──────────────────────
+function getEasternTime () {
+  const now  = new Date();
   const opts = {
-    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    timeZone : 'America/New_York',
+    year     : 'numeric', month  : '2-digit', day    : '2-digit',
+    hour     : '2-digit', minute : '2-digit', second : '2-digit',
+    hour12   : false
   };
-  const parts = new Intl.DateTimeFormat('en-US', opts).formatToParts(now);
-  const m = {};
-  for (const { type, value } of parts) m[type] = value;
-  const date = `${m.year}-${m.month}-${m.day}`;
-  const time = `${m.hour}:${m.minute}:${m.second}`;
-  const localOffset = now.getTimezoneOffset();
-  const nyOffset = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' })).getTimezoneOffset();
-  const diff = nyOffset - localOffset;
-  const sign = diff <= 0 ? '+' : '-';
-  const absMin = Math.abs(diff);
-  const hh = String(Math.floor(absMin / 60)).padStart(2, '0');
-  const mm = String(absMin % 60).padStart(2, '0');
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', opts)
+      .formatToParts(now)
+      .map(({ type, value }) => [type, value])
+  );
+  const date = `${parts.year}-${parts.month}-${parts.day}`;
+  const time = `${parts.hour}:${parts.minute}:${parts.second}`;
+
+  // work out NY offset vs UTC
+  const nyOffsetMin = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }))
+                        .getTimezoneOffset();               // minutes west of UTC
+  const sign        = nyOffsetMin <= 0 ? '+' : '-';
+  const abs         = Math.abs(nyOffsetMin);
+  const hh          = String(Math.floor(abs / 60)).padStart(2, '0');
+  const mm          = String(abs % 60).padStart(2, '0');
+
   return `${date}T${time}${sign}${hh}:${mm}`;
 }
 
-function createResponse(id, result, error = null) {
-  const resp = { jsonrpc: '2.0', id };
-  if (error) resp.error = error; else resp.result = result;
-  return resp;
-}
+// ── 2. helpers for JSON-RPC 2.0 responses ───────────────────────────
+const ok     = (id, result)           => ({ jsonrpc: '2.0', id, result });
+const err    = (id, code, message)    => ({ jsonrpc: '2.0', id, error: { code, message } });
+const PARSE  = -32700, NOT_FOUND = -32601;
 
-function createError(id, code, message, data) {
-  const err = { code, message };
-  if (data !== undefined) err.data = data;
-  return createResponse(id, null, err);
-}
+// ── 3. main fetch handler ────────────────────────────────────────────
+async function handleRequest (request) {
+  // allow “quick GET” style: /?method=get_eastern_time
+  if (request.method === 'GET') {
+    const m = new URL(request.url).searchParams.get('method');
+    if (m) return json(ok('mcp-id', m === 'get_eastern_time' ? getEasternTime() : `Unknown method ${m}`));
+  }
 
-async function handleRPC(payload) {
-  const id = payload.id ?? "mcp-id";
+  if (request.method !== 'POST')
+    return new Response('Send JSON-RPC via POST', { status: 405 });
+
+  let payload;
+  try { payload = await request.json(); }
+  catch { return json(err(null, PARSE, 'Parse error'), 400); }
+
+  const id     = payload.id ?? 'mcp-id';
   const method = payload.method;
 
-  switch (method) {
-    case 'initialize':
-      return createResponse(id, {
-        protocolVersion: '2024-11-05',
-        serverInfo: {
-          name: 'eastern-time-server',
-          version: '1.0.0',
-          description: 'Provides Eastern Time ISO timestamps'
-        },
-        capabilities: {
-          tools: {
-            get_eastern_time: {
-              description: 'Returns ISO 8601 Eastern Time string',
-              inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-              outputFormat: 'string (ISO 8601 / RFC 3339, e.g. 2025-06-14T14:23:45-04:00)'
-            }
-          }
-        }
-      });
+  if (method === 'initialize')
+    return json(ok(id, {
+      protocolVersion: '2024-11-05',
+      serverInfo: { name: 'eastern-time-server', version: '1.0.0',
+                    description: 'Provides Eastern Time ISO timestamps' },
+      capabilities: { tools: { get_eastern_time: {
+        description: 'Returns ISO 8601 Eastern Time string',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        outputFormat: 'string' } } }
+    }));
 
-    case 'tools/list':
-      return createResponse(id, {
-        tools: [
-          {
-            name: 'get_eastern_time',
-            description: 'Get Eastern Time ISO string',
-            inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-            outputFormat: 'string (ISO 8601 / RFC 3339)'
-          }
-        ]
-      });
+  if (method === 'tools/list')
+    return json(ok(id, { tools: [{ name: 'get_eastern_time',
+                                   description: 'Get Eastern Time ISO string',
+                                   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+                                   outputFormat: 'string' }] }));
 
-    case 'tools/call': {
-      const tool = payload.params?.name;
-      if (tool !== 'get_eastern_time') {
-        return createError(id, -32602, `Unknown tool: ${tool}`);
-      }
-      try {
-        const timestamp = getEasternTime();
-        await new Promise(resolve => setTimeout(resolve, 100)); // Delay before response
-        return createResponse(id, timestamp);
-      } catch (e) {
-        return createError(id, -32603, 'Internal error', e.message);
-      }
-    }
+  if (method === 'tools/call' && payload.params?.name === 'get_eastern_time')
+    return json(ok(id, getEasternTime()));
 
-    default:
-      return createError(id, -32601, `Method not found: ${method}`);
-  }
+  return json(err(id, NOT_FOUND, `Method not found: ${method}`));
 }
 
-// --- NEW NETWORK LAYER ----------------------------------------------------
-Deno.serve(async req => {
-  const { method, headers, url } = req;
-  const upgradeHdr = headers.get("upgrade") ?? "";
-  const u              = new URL(url);
-  const rpcMethodParam = u.searchParams.get("method"); // e.g. ?method=get_eastern_time
+const json = (obj, status = 200) =>
+  new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'Content-Type': 'application/json' }
+  });
 
-  /* ────────────────────────── 1. WebSocket ────────────────────────── */
-  if (upgradeHdr.toLowerCase() === "websocket") {
-    const { socket, response } = Deno.upgradeWebSocket(req);
-
-    socket.onopen    = () => console.log("⚡ WebSocket opened");
-    socket.onerror   = e  => console.error("WebSocket error:", e);
-    socket.onclose   = () => console.log("WebSocket closed");
-
-    socket.onmessage = async evt => {
-      let msg;
-      try       { msg = JSON.parse(evt.data); }
-      catch     { socket.send(JSON.stringify(createError("mcp-id", -32700, "Parse error"))); return; }
-
-      try       { socket.send(JSON.stringify(await handleRPC(msg))); }
-      catch (e) { socket.send(JSON.stringify(createError(msg.id ?? "mcp-id", -32603, "Internal error", e.message))); }
-    };
-
-    return response;
-  }
-
-  /* ────────────────────────── 2. HTTP  GET  ───────────────────────── */
-  if (method === "GET" && rpcMethodParam) {
-    // Build a pseudo-RPC payload from the query string
-    const payload = { jsonrpc: "2.0", id: "mcp-id", method: rpcMethodParam };
-
-    // In case the caller specified `name=` for tools/call
-    if (payload.method === "tools/call") {
-      payload.params = { name: u.searchParams.get("name") };
-    }
-
-    const reply = await handleRPC(payload);
-
-    return new Response(JSON.stringify(reply), {
-      status: 200,
-      headers: { "Content-Type": "application/json" }
-    });
-  }
-
-  /* ────────────────────────── 3. HTTP  POST ───────────────────────── */
-  if (method === "POST") {
-    return req.json()
-      .then(handleRPC)
-      .then(reply => new Response(JSON.stringify(reply), {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      }))
-      .catch(() => new Response(
-        JSON.stringify(createError(null, -32700, "Parse error")),
-        { status: 400, headers: { "Content-Type": "application/json" } }
-      ));
-  }
-
-  /* ────────────────────────── 4. Unsupported verb ─────────────────── */
-  return new Response("Only GET (with ?method=…), POST, or WebSocket supported", { status: 405 });
-});
+// ── 4. Cloudflare export (module syntax) ─────────────────────────────
+export default { fetch: handleRequest };
