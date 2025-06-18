@@ -2,7 +2,7 @@
 
 This example shows a simple Model Context Protocol (MCP) server that responds
 with the current time in the US Eastern timezone.  The server does **not**
-perform any authentication and accepts plain HTTP `GET` and `POST` requests.
+perform any authentication and exposes an SSE endpoint at `/sse`.
 
 ## Get started: 
 
