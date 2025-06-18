@@ -1,6 +1,8 @@
 # Building a Remote MCP Server on Cloudflare (Without Auth)
 
-This example allows you to deploy a remote MCP server that doesn't require authentication on Cloudflare Workers. 
+This example shows a simple Model Context Protocol (MCP) server that responds
+with the current time in the US Eastern timezone.  The server does **not**
+perform any authentication and accepts plain HTTP `GET` and `POST` requests.
 
 ## Get started: 
 
