@@ -93,44 +93,31 @@ async function handleRPC(payload) {
 
 // --- NEW NETWORK LAYER ----------------------------------------------------
 Deno.serve(async req => {
-  const { method, headers, url } = req;
-  const upgradeHdr = headers.get("upgrade") ?? "";
+  const { method, url } = req;
   const u              = new URL(url);
   const rpcMethodParam = u.searchParams.get("method"); // e.g. ?method=get_eastern_time
 
-  /* ────────────────────────── 1. WebSocket ────────────────────────── */
-  if (upgradeHdr.toLowerCase() === "websocket") {
-    const { socket, response } = Deno.upgradeWebSocket(req);
+  /* ────────────────────────── 1. HTTP  GET  ───────────────────────── */
+  if (method === "GET") {
+    if (rpcMethodParam) {
+      // Build a pseudo-RPC payload from the query string
+      const payload = { jsonrpc: "2.0", id: "mcp-id", method: rpcMethodParam };
 
-    socket.onopen    = () => console.log("⚡ WebSocket opened");
-    socket.onerror   = e  => console.error("WebSocket error:", e);
-    socket.onclose   = () => console.log("WebSocket closed");
+      // In case the caller specified `name=` for tools/call
+      if (payload.method === "tools/call") {
+        payload.params = { name: u.searchParams.get("name") };
+      }
 
-    socket.onmessage = async evt => {
-      let msg;
-      try       { msg = JSON.parse(evt.data); }
-      catch     { socket.send(JSON.stringify(createError("mcp-id", -32700, "Parse error"))); return; }
+      const reply = await handleRPC(payload);
 
-      try       { socket.send(JSON.stringify(await handleRPC(msg))); }
-      catch (e) { socket.send(JSON.stringify(createError(msg.id ?? "mcp-id", -32603, "Internal error", e.message))); }
-    };
-
-    return response;
-  }
-
-  /* ────────────────────────── 2. HTTP  GET  ───────────────────────── */
-  if (method === "GET" && rpcMethodParam) {
-    // Build a pseudo-RPC payload from the query string
-    const payload = { jsonrpc: "2.0", id: "mcp-id", method: rpcMethodParam };
-
-    // In case the caller specified `name=` for tools/call
-    if (payload.method === "tools/call") {
-      payload.params = { name: u.searchParams.get("name") };
+      return new Response(JSON.stringify(reply), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
     }
 
-    const reply = await handleRPC(payload);
-
-    return new Response(JSON.stringify(reply), {
+    // default GET with no method just returns current time
+    return new Response(JSON.stringify({ timestamp: getEasternTime() }), {
       status: 200,
       headers: { "Content-Type": "application/json" }
     });
@@ -151,5 +138,5 @@ Deno.serve(async req => {
   }
 
   /* ────────────────────────── 4. Unsupported verb ─────────────────── */
-  return new Response("Only GET (with ?method=…), POST, or WebSocket supported", { status: 405 });
+  return new Response("Only GET (with ?method=…), or POST supported", { status: 405 });
 });
